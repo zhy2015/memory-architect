@@ -52,15 +52,19 @@ class WorkflowEngine:
         self,
         actions: Dict[str, ActionHandler],
         context: Optional[WorkflowContext] = None,
+        run_store: Optional[object] = None,
     ):
         self.actions = actions
         self.context = context or get_context()
+        self.run_store = run_store
         self._callbacks: List[Callable[[str, Dict[str, Any]], Awaitable[None] | None]] = []
 
     def on_node_complete(self, callback: Callable[[str, Dict[str, Any]], Awaitable[None] | None]):
         self._callbacks.append(callback)
 
     async def execute(self, pipeline: WorkflowPipeline) -> Dict[str, Any]:
+        if self.run_store is not None:
+            self.run_store.save_pipeline_state(pipeline, event="started")
         order = self._topological_sort(pipeline)
         for node_id in order:
             node = pipeline.nodes[node_id]
@@ -74,9 +78,16 @@ class WorkflowEngine:
                 maybe = cb(node_id, payload)
                 if asyncio.iscoroutine(maybe):
                     asyncio.create_task(maybe)
+            if self.run_store is not None:
+                self.run_store.save_pipeline_state(pipeline, event=f"node_complete:{node_id}", extra=payload)
             if node.status == NodeStatus.FAILED:
+                if self.run_store is not None:
+                    self.run_store.save_pipeline_state(pipeline, event="failed", extra={"node_id": node_id, "error": node.error})
                 raise RuntimeError(f"Pipeline failed at node {node_id}: {node.error}")
-        return {nid: node.result for nid, node in pipeline.nodes.items() if node.status == NodeStatus.SUCCESS}
+        result = {nid: node.result for nid, node in pipeline.nodes.items() if node.status == NodeStatus.SUCCESS}
+        if self.run_store is not None:
+            self.run_store.save_pipeline_state(pipeline, event="completed", extra={"result": result})
+        return result
 
     def _topological_sort(self, pipeline: WorkflowPipeline) -> List[str]:
         in_degree = {node_id: 0 for node_id in pipeline.nodes}

@@ -14,25 +14,21 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from memory_master import MemoryMaster
-from workflow_engine import WorkflowEngine, WorkflowNode, WorkflowPipeline
-from workflow_engine.registry import ActionRegistry
-
-
-def build_registry(mm: MemoryMaster) -> ActionRegistry:
-    registry = ActionRegistry()
-    registry.register("write", lambda content: mm.write_daily(content, metadata={"source": "pipeline_demo"}))
-    registry.register("consolidate", lambda dry_run=False: mm.consolidate(dry_run=dry_run))
-    registry.register("index", lambda: mm.build_index())
-    registry.register("status", lambda: mm.status())
-    registry.register("search", lambda query, limit=3: mm.search(query=query, limit=limit))
-    return registry
+from workflow_engine import (
+    WorkflowEngine,
+    WorkflowNode,
+    WorkflowPipeline,
+    WorkflowRunStore,
+    build_memory_registry,
+)
 
 
 async def main() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         workspace = Path(tmp)
         mm = MemoryMaster(workspace)
-        registry = build_registry(mm)
+        registry = build_memory_registry(mm)
+        run_store = WorkflowRunStore(workspace / "workflow-runs")
 
         pipeline = (
             WorkflowPipeline("memory-demo", "memory demo")
@@ -47,8 +43,8 @@ async def main() -> None:
             .add_edge("search", "status")
         )
 
-        result = await WorkflowEngine(registry.as_dict()).execute(pipeline)
-        print(json.dumps(result, indent=2, ensure_ascii=False))
+        result = await WorkflowEngine(registry.as_dict(), run_store=run_store).execute(pipeline)
+        print(json.dumps({"result": result, "run_state": run_store.load_pipeline_state("memory-demo")}, indent=2, ensure_ascii=False))
 
 
 if __name__ == "__main__":

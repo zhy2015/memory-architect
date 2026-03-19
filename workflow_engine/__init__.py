@@ -1,6 +1,8 @@
 from .context import WorkflowContext, get_context, clear_all_contexts
 from .pipeline import NodeStatus, WorkflowNode, WorkflowPipeline, WorkflowEngine, run_pipeline
 from .registry import ActionRegistry
+from .adapters import build_memory_registry, export_memory_actions
+from .persistence import WorkflowRunStore
 
 __all__ = [
     "WorkflowContext",
@@ -12,4 +14,7 @@ __all__ = [
     "WorkflowEngine",
     "run_pipeline",
     "ActionRegistry",
+    "build_memory_registry",
+    "export_memory_actions",
+    "WorkflowRunStore",
 ]
