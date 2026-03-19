@@ -69,7 +69,7 @@ class WorkflowEngine:
     def on_node_complete(self, callback: Callable[[str, Dict[str, Any]], Awaitable[None] | None]):
         self._callbacks.append(callback)
 
-    async def execute(self, pipeline: WorkflowPipeline, *, resume: bool = False) -> Dict[str, Any]:
+    async def execute(self, pipeline: WorkflowPipeline, *, resume: bool = False, parallel: bool = False) -> Dict[str, Any]:
         run_id = None
         if resume and self.run_store is not None:
             self._resume_pipeline_state(pipeline)
@@ -82,34 +82,62 @@ class WorkflowEngine:
             self.run_store.save_pipeline_state(pipeline, event="started" if not resume else "resumed", extra=meta)
             if not run_id:
                 run_id = self.run_store.load_pipeline_state(pipeline.pipeline_id).get("run_id")
-        order = self._topological_sort(pipeline)
-        for node_id in order:
-            node = pipeline.nodes[node_id]
-            if resume and node.status == NodeStatus.SUCCESS:
-                continue
-            await self._execute_node(node, pipeline)
-            payload = {
-                "status": node.status.value,
-                "outputs": node.result,
-                "error": node.error,
-            }
-            for cb in self._callbacks:
-                maybe = cb(node_id, payload)
-                if asyncio.iscoroutine(maybe):
-                    asyncio.create_task(maybe)
-            if self.run_store is not None:
-                self.run_store.save_pipeline_state(pipeline, event=f"node_complete:{node_id}", extra={**payload, "run_id": run_id})
-            if node.status == NodeStatus.FAILED:
-                if self.run_store is not None:
-                    self.run_store.save_pipeline_state(pipeline, event="failed", extra={"node_id": node_id, "error": node.error, "run_id": run_id})
-                if pipeline.on_error == "continue":
+
+        if parallel:
+            await self._execute_parallel(pipeline, run_id=run_id, resume=resume)
+        else:
+            order = self._topological_sort(pipeline)
+            for node_id in order:
+                node = pipeline.nodes[node_id]
+                if resume and node.status == NodeStatus.SUCCESS:
                     continue
-                raise RuntimeError(f"Pipeline failed at node {node_id}: {node.error}")
+                await self._run_one_node(node_id, node, pipeline, run_id)
+
         result = {nid: node.result for nid, node in pipeline.nodes.items() if node.status == NodeStatus.SUCCESS}
         if self.run_store is not None:
             self.run_store.save_pipeline_state(pipeline, event="completed", extra={"result": result, "run_id": run_id})
         return result
 
+    async def _execute_parallel(self, pipeline: WorkflowPipeline, *, run_id: Optional[str], resume: bool) -> None:
+        in_degree = {node_id: 0 for node_id in pipeline.nodes}
+        reverse_edges = {node_id: [] for node_id in pipeline.nodes}
+        for src, targets in pipeline.edges.items():
+            for dst in targets:
+                in_degree[dst] += 1
+                reverse_edges[dst].append(src)
+
+        ready = [node_id for node_id, degree in in_degree.items() if degree == 0]
+        processed = set()
+
+        while ready:
+            batch = []
+            next_ready = []
+            for node_id in ready:
+                node = pipeline.nodes[node_id]
+                if resume and node.status == NodeStatus.SUCCESS:
+                    processed.add(node_id)
+                    for dst in pipeline.edges.get(node_id, []):
+                        in_degree[dst] -= 1
+                        if in_degree[dst] == 0:
+                            next_ready.append(dst)
+                    continue
+                batch.append((node_id, node))
+
+            results = await asyncio.gather(*[self._run_one_node(node_id, node, pipeline, run_id, raise_on_failure=False) for node_id, node in batch])
+
+            for ok, node_id in results:
+                processed.add(node_id)
+                node = pipeline.nodes[node_id]
+                if not ok and pipeline.on_error != "continue":
+                    raise RuntimeError(f"Pipeline failed at node {node_id}: {node.error}")
+                for dst in pipeline.edges.get(node_id, []):
+                    in_degree[dst] -= 1
+                    if in_degree[dst] == 0:
+                        next_ready.append(dst)
+            ready = next_ready
+
+        if len(processed) != len(pipeline.nodes):
+            raise ValueError("Workflow contains cycles or blocked nodes")
 
     def _resume_pipeline_state(self, pipeline: WorkflowPipeline) -> None:
         if self.run_store is None:
@@ -149,6 +177,27 @@ class WorkflowEngine:
         if len(result) != len(pipeline.nodes):
             raise ValueError("Workflow contains cycles")
         return result
+
+    async def _run_one_node(self, node_id: str, node: WorkflowNode, pipeline: WorkflowPipeline, run_id: Optional[str], raise_on_failure: bool = True):
+        await self._execute_node(node, pipeline)
+        payload = {
+            "status": node.status.value,
+            "outputs": node.result,
+            "error": node.error,
+        }
+        for cb in self._callbacks:
+            maybe = cb(node_id, payload)
+            if asyncio.iscoroutine(maybe):
+                asyncio.create_task(maybe)
+        if self.run_store is not None:
+            self.run_store.save_pipeline_state(pipeline, event=f"node_complete:{node_id}", extra={**payload, "run_id": run_id})
+        if node.status == NodeStatus.FAILED:
+            if self.run_store is not None:
+                self.run_store.save_pipeline_state(pipeline, event="failed", extra={"node_id": node_id, "error": node.error, "run_id": run_id})
+            if raise_on_failure and pipeline.on_error != "continue":
+                raise RuntimeError(f"Pipeline failed at node {node_id}: {node.error}")
+            return False, node_id
+        return True, node_id
 
     async def _execute_node(self, node: WorkflowNode, pipeline: WorkflowPipeline) -> None:
         attempt = 0

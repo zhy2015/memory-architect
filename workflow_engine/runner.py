@@ -45,7 +45,7 @@ async def run(args):
     store = WorkflowRunStore(Path(args.workspace) / "workflow-runs")
     pipeline = load_pipeline(args.pipeline)
     engine = WorkflowEngine(registry.as_dict(), run_store=store)
-    result = await engine.execute(pipeline, resume=args.resume)
+    result = await engine.execute(pipeline, resume=args.resume, parallel=args.parallel)
     print(json.dumps(result, indent=2, ensure_ascii=False))
 
 
@@ -54,6 +54,7 @@ def main():
     parser.add_argument("pipeline", help="Path to pipeline JSON definition")
     parser.add_argument("--workspace", default=".", help="Workspace root for MemoryMaster")
     parser.add_argument("--resume", action="store_true", help="Resume from saved workflow state")
+    parser.add_argument("--parallel", action="store_true", help="Run independent nodes in parallel")
     args = parser.parse_args()
     asyncio.run(run(args))
 
