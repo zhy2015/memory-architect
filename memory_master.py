@@ -187,6 +187,12 @@ class MemoryMaster:
         result["message"] = f"Found {len(results)} results"
         return result
     
+    def recall(self, query: str, limit: int = 5) -> Dict:
+        """兼容生产接入的 recall API，当前委托给 search。"""
+        result = self.search(query=query, limit=limit)
+        result["action"] = "recall"
+        return result
+
     def build_index(self) -> Dict:
         """构建向量索引"""
         result = {
