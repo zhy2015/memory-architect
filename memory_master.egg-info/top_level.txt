@@ -1,2 +1,0 @@
-memory_master
-workflow_engine
