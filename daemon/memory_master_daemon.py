@@ -15,6 +15,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Set
 
+from daemon.insight_extractor import InsightExtractor
+
 
 class MemoryMasterDaemon:
     """
@@ -41,6 +43,7 @@ class MemoryMasterDaemon:
         
         self.core_memory = self.core_dir / "MEMORY.md"
         self.index_file = self.index_dir / "memory_index.json"
+        self.extractor = InsightExtractor()
     
     def run_daily_maintenance(self):
         """每日维护任务"""
@@ -105,42 +108,8 @@ class MemoryMasterDaemon:
     def _extract_insights(self, log_files: List[Path]) -> List[Dict]:
         """从日志中提取高价值经验"""
         insights = []
-        
         for log_file in log_files:
-            with open(log_file) as f:
-                content = f.read()
-            
-            # 提取关键模式
-            # 1. 失败模式
-            failures = re.findall(r'FAILED.*?:\s*(.+)', content)
-            for f in failures:
-                insights.append({
-                    "type": "failure_pattern",
-                    "content": f.strip(),
-                    "source": log_file.name,
-                    "date": self._extract_date(log_file.name)
-                })
-            
-            # 2. 成功经验
-            successes = re.findall(r'SUCCESS.*?\((.+?)\)', content)
-            for s in successes:
-                insights.append({
-                    "type": "success_pattern",
-                    "content": s.strip(),
-                    "source": log_file.name,
-                    "date": self._extract_date(log_file.name)
-                })
-            
-            # 3. 技能使用统计
-            skill_usage = re.findall(r'Skills registered:\s*(\d+)', content)
-            if skill_usage:
-                insights.append({
-                    "type": "metric",
-                    "content": f"Total skills: {skill_usage[0]}",
-                    "source": log_file.name,
-                    "date": self._extract_date(log_file.name)
-                })
-        
+            insights.extend(self.extractor.extract(log_file))
         return insights
     
     def _extract_date(self, filename: str) -> str:
